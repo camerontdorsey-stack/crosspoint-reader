@@ -974,7 +974,20 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 }
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
-  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
+  const bool ok = EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
+  // Persist the running reading speed (global) so the sleep screen can show a time-left estimate.
+  // Piggybacks on progress saves, which are already throttled, so it adds no extra SD churn.
+  if (readingSpeedSamples > 0) {
+    HalFile rs;
+    if (Storage.openFileForWrite("ERS", "/.crosspoint/readspeed.bin", rs)) {
+      uint8_t buf[6];
+      memcpy(buf, &msPerPageEma, sizeof(float));
+      buf[4] = static_cast<uint8_t>(readingSpeedSamples & 0xFF);
+      buf[5] = static_cast<uint8_t>((readingSpeedSamples >> 8) & 0xFF);
+      rs.write(buf, sizeof(buf));
+    }
+  }
+  return ok;
 }
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,

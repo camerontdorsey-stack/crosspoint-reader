@@ -8,9 +8,14 @@
 #include <Txt.h>
 #include <Xtc.h>
 
+#include <algorithm>
+#include <cstring>
+#include <vector>
+
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "activities/reader/ReaderUtils.h"
+#include "activities/reader/ReadingEstimate.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -206,6 +211,9 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
     y = (pageHeight - bitmap.getHeight()) / 2;
   }
 
+  // Resolve the optional "now reading" pane content before any heavy rendering.
+  loadSleepInfoIfEnabled();
+
   LOG_DBG("SLP", "drawing to %d x %d", x, y);
   renderer.clearScreen();
 
@@ -218,19 +226,26 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
     renderer.invertScreen();
   }
 
+  // Overlay the pane after the filter so it isn't inverted along with the wallpaper.
+  drawSleepInfoPane();
+
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 
   if (hasGreyscale) {
+    // For grayscale wallpapers the visible frame is the gray buffer, so the pane must be baked into
+    // both gray planes (drawn once per pass) to appear on the final image.
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    drawSleepInfoPane();
     renderer.copyGrayscaleLsbBuffers();
 
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+    drawSleepInfoPane();
     renderer.copyGrayscaleMsbBuffers();
 
     renderer.displayGrayBuffer();
@@ -326,4 +341,165 @@ void SleepActivity::renderLastScreenSleepScreen() const {
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void SleepActivity::loadSleepInfoIfEnabled() const {
+  infoTitle.clear();
+  infoAuthor.clear();
+  if (SETTINGS.sleepInfoPane == CrossPointSettings::SLEEP_INFO_PANE_OFF || APP_STATE.openEpubPath.empty()) {
+    return;
+  }
+  // v1 reads metadata from EPUBs only; TXT/XTC simply show no pane.
+  if (!FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
+    return;
+  }
+  Epub epub(APP_STATE.openEpubPath, "/.crosspoint");
+  if (!epub.load(true, true)) {  // metadata only — skip CSS and spine bodies
+    LOG_DBG("SLP", "Info pane: epub metadata load failed");
+    return;
+  }
+  infoTitle = epub.getTitle();
+
+  // Pages/time remaining, derived from the saved progress cache plus the persisted reading speed.
+  infoPagesLeft = -1;
+  infoMinutesLeft = -1;
+
+  // Read saved progress. Layout (see EpubReaderActivity::onEnter): [0,1]=spine, [2,3]=current page,
+  // [4,5]=chapter page count.
+  uint16_t spineIndex = 0, curPage = 0, chapterTotal = 0;
+  bool haveProgress = false;
+  HalFile pf;
+  if (Storage.openFileForRead("SLP", epub.getCachePath() + "/progress.bin", pf)) {
+    uint8_t data[6];
+    if (pf.read(data, 6) == 6) {
+      spineIndex = static_cast<uint16_t>(data[0] + (data[1] << 8));
+      curPage = static_cast<uint16_t>(data[2] + (data[3] << 8));
+      chapterTotal = static_cast<uint16_t>(data[4] + (data[5] << 8));
+      if (curPage == UINT16_MAX) curPage = 0;  // resume sentinel, treat as start
+      haveProgress = true;
+    }
+  }
+
+  // Second line: the current chapter's title (when selected and resolvable), otherwise the author.
+  if (SETTINGS.sleepInfoSecondary == CrossPointSettings::SLEEP_INFO_SECONDARY_CHAPTER && haveProgress) {
+    const int tocIndex = epub.getTocIndexForSpineIndex(spineIndex);
+    if (tocIndex != -1) {
+      infoAuthor = epub.getTocItem(tocIndex).title;
+    }
+  }
+  if (infoAuthor.empty()) {
+    infoAuthor = epub.getAuthor();
+  }
+
+  if (chapterTotal == 0) {
+    return;  // no usable page metrics; pane still shows title + second line
+  }
+
+  const int curPage1 = static_cast<int>(curPage) + 1;
+  const float chapterLeft = ReadingEstimate::chapterPagesLeft(curPage1, chapterTotal);
+  float pagesLeft = chapterLeft;
+  if (SETTINGS.sleepInfoReference == CrossPointSettings::SLEEP_INFO_REF_BOOK) {
+    // Extrapolate whole-book pages from this chapter's byte-span share (same model as the reader).
+    const float chapFrac = static_cast<float>(curPage1) / static_cast<float>(chapterTotal);
+    const float bookProgressPct = epub.calculateProgress(spineIndex, chapFrac) * 100.0f;
+    const float span = epub.calculateProgress(spineIndex, 1.0f) - epub.calculateProgress(spineIndex, 0.0f);
+    pagesLeft = ReadingEstimate::bookPagesLeft(chapterLeft, chapterTotal, span, bookProgressPct);
+  }
+  infoPagesLeft = static_cast<int>(pagesLeft + 0.5f);
+
+  // Reading speed (global), persisted by the reader on each progress save, enables the time estimate.
+  HalFile rs;
+  if (Storage.openFileForRead("SLP", "/.crosspoint/readspeed.bin", rs)) {
+    uint8_t buf[6];
+    if (rs.read(buf, 6) == 6) {
+      float msPerPage = 0.0f;
+      memcpy(&msPerPage, buf, sizeof(float));
+      const uint16_t samples = static_cast<uint16_t>(buf[4] + (buf[5] << 8));
+      if (samples >= ReadingEstimate::MIN_SAMPLES && msPerPage > 0.0f) {
+        infoMinutesLeft = ReadingEstimate::minutesLeft(msPerPage, pagesLeft);
+      }
+    }
+  }
+}
+
+void SleepActivity::drawSleepInfoPane() const {
+  if (infoTitle.empty()) {
+    return;
+  }
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+
+  constexpr int titleFont = UI_10_FONT_ID;
+  constexpr int bodyFont = SMALL_FONT_ID;
+  constexpr int padX = 16;        // horizontal text padding inside the pane
+  constexpr int padY = 10;        // vertical text padding inside the pane
+  constexpr int edgeMargin = 24;  // gap from the screen edges
+  constexpr int lineGap = 4;      // gap between stacked lines
+  constexpr int radius = 10;      // rounded "glass" corner radius
+
+  const int maxPaneW = screenW - 2 * edgeMargin;
+  const int maxTextW = maxPaneW - 2 * padX;
+
+  // Build the up-to-three lines: title (bold), author, "<n> pages left in chapter".
+  struct Line {
+    std::string text;
+    int fontId;
+    EpdFontFamily::Style style;
+    int width;
+    int height;
+  };
+  std::vector<Line> lines;
+  lines.reserve(4);
+  auto addLine = [&](const std::string& raw, int fontId, EpdFontFamily::Style style) {
+    if (raw.empty()) return;
+    std::string t = renderer.truncatedText(fontId, raw.c_str(), maxTextW, style);
+    lines.push_back(
+        {t, fontId, style, renderer.getTextWidth(fontId, t.c_str(), style), renderer.getLineHeight(fontId)});
+  };
+  addLine(infoTitle, titleFont, EpdFontFamily::BOLD);
+  addLine(infoAuthor, bodyFont, EpdFontFamily::REGULAR);
+
+  // Metric line(s) per the Content setting, worded for the chosen chapter/book reference.
+  const bool refBook = SETTINGS.sleepInfoReference == CrossPointSettings::SLEEP_INFO_REF_BOOK;
+  const uint8_t content = SETTINGS.sleepInfoContent;
+  const bool wantPages =
+      content == CrossPointSettings::SLEEP_INFO_PAGES || content == CrossPointSettings::SLEEP_INFO_BOTH;
+  const bool wantTime =
+      content == CrossPointSettings::SLEEP_INFO_TIME || content == CrossPointSettings::SLEEP_INFO_BOTH;
+  if (wantPages && infoPagesLeft >= 0) {
+    const StrId suffix = (infoPagesLeft == 1)
+                             ? (refBook ? StrId::STR_PAGE_LEFT_IN_BOOK : StrId::STR_PAGE_LEFT_IN_CHAPTER)
+                             : (refBook ? StrId::STR_PAGES_LEFT_IN_BOOK : StrId::STR_PAGES_LEFT_IN_CHAPTER);
+    addLine(std::to_string(infoPagesLeft) + " " + I18N.get(suffix), bodyFont, EpdFontFamily::REGULAR);
+  }
+  if (wantTime && infoMinutesLeft >= 0) {
+    const StrId suffix = refBook ? StrId::STR_MIN_LEFT_IN_BOOK : StrId::STR_MIN_LEFT_IN_CHAPTER;
+    addLine("~" + std::to_string(infoMinutesLeft) + " " + I18N.get(suffix), bodyFont, EpdFontFamily::REGULAR);
+  }
+
+  int textW = 0;
+  int textH = 0;
+  for (size_t i = 0; i < lines.size(); i++) {
+    textW = std::max(textW, lines[i].width);
+    textH += lines[i].height + (i > 0 ? lineGap : 0);
+  }
+
+  const int paneW = std::min(maxPaneW, textW + 2 * padX);
+  const int paneH = 2 * padY + textH;
+  const int paneX = (screenW - paneW) / 2;
+  const int paneY = (SETTINGS.sleepInfoPanePosition == CrossPointSettings::SLEEP_INFO_PANE_TOP)
+                        ? edgeMargin
+                        : screenH - edgeMargin - paneH;
+
+  // Opaque white card with a thin rounded border — clean and legible over any photo.
+  renderer.fillRoundedRect(paneX, paneY, paneW, paneH, radius, Color::White);
+  renderer.drawRoundedRect(paneX, paneY, paneW, paneH, 1, radius, true);
+
+  // Stack the lines, each centered within the pane.
+  int lineTop = paneY + padY;
+  for (size_t i = 0; i < lines.size(); i++) {
+    if (i > 0) lineTop += lines[i - 1].height + lineGap;
+    renderer.drawText(lines[i].fontId, paneX + (paneW - lines[i].width) / 2, lineTop, lines[i].text.c_str(), true,
+                      lines[i].style);
+  }
 }

@@ -34,6 +34,18 @@ class CrossPointSettings {
     INVERTED_BLACK_AND_WHITE = 2,
     SLEEP_SCREEN_COVER_FILTER_COUNT
   };
+  // Optional "now reading" info pane on image sleep screens. Title + author always show; the metric
+  // line(s) and their chapter/book reference are configured separately.
+  enum SLEEP_INFO_PANE { SLEEP_INFO_PANE_OFF = 0, SLEEP_INFO_PANE_ON = 1, SLEEP_INFO_PANE_COUNT };
+  enum SLEEP_INFO_CONTENT { SLEEP_INFO_PAGES = 0, SLEEP_INFO_TIME = 1, SLEEP_INFO_BOTH = 2, SLEEP_INFO_CONTENT_COUNT };
+  enum SLEEP_INFO_REFERENCE { SLEEP_INFO_REF_CHAPTER = 0, SLEEP_INFO_REF_BOOK = 1, SLEEP_INFO_REFERENCE_COUNT };
+  // Second line of the pane: the book's author, or the current chapter's title.
+  enum SLEEP_INFO_SECONDARY {
+    SLEEP_INFO_SECONDARY_AUTHOR = 0,
+    SLEEP_INFO_SECONDARY_CHAPTER = 1,
+    SLEEP_INFO_SECONDARY_COUNT
+  };
+  enum SLEEP_INFO_PANE_POSITION { SLEEP_INFO_PANE_BOTTOM = 0, SLEEP_INFO_PANE_TOP = 1, SLEEP_INFO_PANE_POSITION_COUNT };
 
   // Status bar enum - legacy
   enum STATUS_BAR_MODE {
@@ -175,6 +187,15 @@ class CrossPointSettings {
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
+  // "Now reading" info pane on image sleep screens (off by default).
+  uint8_t sleepInfoPane = SLEEP_INFO_PANE_OFF;
+  // Which metric line(s) the pane shows, and whether they refer to the chapter or the whole book.
+  uint8_t sleepInfoContent = SLEEP_INFO_PAGES;
+  uint8_t sleepInfoReference = SLEEP_INFO_REF_CHAPTER;
+  // Whether the pane's second line is the author or the current chapter title.
+  uint8_t sleepInfoSecondary = SLEEP_INFO_SECONDARY_AUTHOR;
+  // Where the info pane sits on the screen (SLEEP_INFO_PANE_POSITION).
+  uint8_t sleepInfoPanePosition = SLEEP_INFO_PANE_BOTTOM;
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
   uint8_t statusBarChapterPageCount = 1;
