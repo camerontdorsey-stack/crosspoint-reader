@@ -31,6 +31,7 @@
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
+#include "ReadingEstimate.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -128,6 +129,10 @@ void EpubReaderActivity::onEnter() {
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   epub->setupCacheDir();
+
+  // Where the main text begins (cover/title/copyright sit before this). Used to skip front matter when
+  // sampling reading speed. Defaults to 0 (no landmark) → nothing skipped.
+  bodyStartSpine = epub->getSpineIndexForTextReference();
 
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
@@ -712,7 +717,39 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
       }
     }
   }
-  lastPageTurnTime = millis();
+  const unsigned long now = millis();
+  // Sample reading speed only on manual forward turns: the time spent on the page we just left is a clean
+  // ms-per-page reading sample. Backward turns and auto page-turn (a fixed timer, not real reading) reset
+  // the anchor so their intervals aren't counted.
+  // Only sample within the main text (skip fast-clicked cover/title/copyright/TOC front matter).
+  const bool inBodyText = currentSpineIndex >= bodyStartSpine;
+  if (isForwardTurn && !automaticPageTurnActive && inBodyText) {
+    if (lastForwardTurnTime != 0UL) {
+      const unsigned long delta = now - lastForwardTurnTime;
+      if (ReadingEstimate::isValidSample(delta)) {
+        if (!speedWarmedUp) {
+          // Buffer the warm-up window, then seed the average from its median (robust to an odd first page).
+          if (warmupCount < ReadingEstimate::WARMUP_SAMPLES) {
+            warmupSamples[warmupCount++] = static_cast<float>(delta);
+          }
+          if (warmupCount >= ReadingEstimate::WARMUP_SAMPLES) {
+            msPerPageEma = ReadingEstimate::median(warmupSamples, warmupCount);
+            readingSpeedSamples = warmupCount;  // now eligible to surface an estimate
+            speedWarmedUp = true;
+          }
+        } else if (!ReadingEstimate::isOutlier(delta, msPerPageEma, readingSpeedSamples)) {
+          msPerPageEma = ReadingEstimate::updateEma(msPerPageEma, readingSpeedSamples, delta);
+          if (readingSpeedSamples < UINT16_MAX) readingSpeedSamples++;
+        }
+      }
+    }
+    lastForwardTurnTime = now;
+  } else {
+    // Backward turn, auto page-turn, or front-matter page: drop the anchor so the next in-content
+    // forward turn begins a clean sample.
+    lastForwardTurnTime = 0UL;
+  }
+  lastPageTurnTime = now;
   requestUpdate();
 }
 
@@ -1124,7 +1161,22 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub->getTitle();
   }
 
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset);
+  // Estimated reading time remaining (status-bar "time left"). Only shown once the reading-speed
+  // average has settled (a few samples) so we never flash a wildly wrong number on the first turns.
+  // The arithmetic lives in ReadingEstimate.h and is unit-tested on the host.
+  int minutesLeft = -1;
+  if (SETTINGS.statusBarTimeLeft != CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_OFF &&
+      readingSpeedSamples >= ReadingEstimate::MIN_SAMPLES && msPerPageEma > 0.0f && pageCount > 0) {
+    float pagesLeft = ReadingEstimate::chapterPagesLeft(currentPage, static_cast<int>(pageCount));
+    if (SETTINGS.statusBarTimeLeft == CrossPointSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_BOOK) {
+      const float span =
+          epub->calculateProgress(currentSpineIndex, 1.0f) - epub->calculateProgress(currentSpineIndex, 0.0f);
+      pagesLeft = ReadingEstimate::bookPagesLeft(pagesLeft, static_cast<int>(pageCount), span, bookProgress);
+    }
+    minutesLeft = ReadingEstimate::minutesLeft(msPerPageEma, pagesLeft);
+  }
+
+  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, minutesLeft);
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

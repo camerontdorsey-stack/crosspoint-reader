@@ -727,7 +727,7 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const int textYOffset,
-                              const bool fillMargin) const {
+                              const bool fillMargin, const int minutesLeft) const {
   auto metrics = UITheme::getInstance().getMetrics();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
@@ -800,6 +800,22 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
   }
 
+  // Draw estimated reading time remaining ("~8m"), to the left of the clock/progress cluster.
+  int timeReserve = 0;
+  if (minutesLeft >= 0) {
+    char timeBuf[16];
+    snprintf(timeBuf, sizeof(timeBuf), "~%dm", minutesLeft);
+    const int timeTextWidth = renderer.getTextWidth(SMALL_FONT_ID, timeBuf);
+    // Walk left past the progress text and clock (each with its 10px gap) to find this element's slot.
+    int clusterLeft = renderer.getScreenWidth() - metrics.statusBarHorizontalMargin - orientedMarginRight;
+    if (progressTextWidth > 0) clusterLeft -= progressTextWidth;
+    if (clockTextWidth > 0) clusterLeft -= (clockTextWidth + 10);
+    const bool hasRightNeighbour = progressTextWidth > 0 || clockTextWidth > 0;
+    const int timeX = clusterLeft - (hasRightNeighbour ? 10 : 0) - timeTextWidth;
+    renderer.drawText(SMALL_FONT_ID, timeX, textY, timeBuf);
+    timeReserve = timeTextWidth + 10;
+  }
+
   // Draw Title
   if (!title.empty()) {
     textY -= textYOffset;
@@ -811,7 +827,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     const int batterySize = SETTINGS.statusBarBattery ? (showBatteryPercentage ? 50 : 20) : 0;
     const int titleMarginLeft = batterySize + 30;
     const int clockReserve = clockTextWidth > 0 ? (clockTextWidth + 10) : 0;
-    const int titleMarginRight = progressTextWidth + clockReserve + 30;
+    const int titleMarginRight = progressTextWidth + clockReserve + timeReserve + 30;
 
     // Attempt to center title on the screen, but if title is too wide then later we will center it within the
     // available space.

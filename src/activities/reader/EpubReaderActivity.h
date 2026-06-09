@@ -7,6 +7,7 @@
 
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
+#include "ReadingEstimate.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -23,6 +24,20 @@ class EpubReaderActivity final : public Activity {
   int cachedChapterTotalPageCount = 0;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
+  // Reading-speed estimate for the status-bar "time left" feature. We sample the wall-clock gap between
+  // consecutive forward page turns and keep an exponential moving average of ms-per-page. Held in RAM only
+  // (resets each session) — cheap, and avoids SD writes on the hot page-turn path.
+  unsigned long lastForwardTurnTime = 0UL;
+  float msPerPageEma = 0.0f;
+  uint16_t readingSpeedSamples = 0;
+  // Warm-up window: the first few in-content samples are buffered and the average is seeded from their
+  // median, so an odd page at the very start can't anchor the estimate to a bad baseline.
+  float warmupSamples[ReadingEstimate::WARMUP_SAMPLES] = {};
+  uint8_t warmupCount = 0;
+  bool speedWarmedUp = false;
+  // First spine index of the main text (from the EPUB's "start of text" landmark). Pages before it —
+  // cover, title, copyright, TOC — are skipped when sampling reading speed (fast-clicked front matter).
+  int bodyStartSpine = 0;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.
   bool pendingPercentJump = false;
