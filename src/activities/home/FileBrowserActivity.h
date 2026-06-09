@@ -37,6 +37,10 @@ class FileBrowserActivity final : public Activity {
   // Data loading
   void loadFiles();
   size_t findEntry(const std::string& name) const;
+  // First-letter jog (front Left/Right): jump the selection to the next/previous starting-letter group.
+  // Snaps to the current letter's first entry before stepping to the adjacent group, so a long list is
+  // navigable in a few presses. Relies on files being alphabetically sorted (see loadFiles()).
+  size_t letterJumpIndex(size_t from, bool forward) const;
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",

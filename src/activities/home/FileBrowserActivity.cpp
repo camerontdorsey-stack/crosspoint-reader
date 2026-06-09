@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "CrossPointSettings.h"
+#include "LetterJump.h"
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -203,9 +204,6 @@ void FileBrowserActivity::loop() {
     return;
   }
 
-  const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + UITheme::getInstance().getMetrics().verticalSpacing;
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
-
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (lockNextConfirmRelease) {
       lockNextConfirmRelease = false;
@@ -303,6 +301,7 @@ void FileBrowserActivity::loop() {
   }
 
   int listSize = static_cast<int>(files.size());
+  // Tap Up/Down to move one entry.
   buttonNavigator.onNextRelease([this, listSize] {
     selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);
     requestUpdate();
@@ -313,13 +312,15 @@ void FileBrowserActivity::loop() {
     requestUpdate();
   });
 
-  buttonNavigator.onNextContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  // Hold Up/Down to scrub by starting-letter group, so a single button pair covers both fine (tap)
+  // and coarse (hold) navigation of a large library — no separate jog buttons to switch to.
+  buttonNavigator.onNextContinuous([this] {
+    selectorIndex = letterJumpIndex(selectorIndex, true);
     requestUpdate();
   });
 
-  buttonNavigator.onPreviousContinuous([this, listSize, pageItems] {
-    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+  buttonNavigator.onPreviousContinuous([this] {
+    selectorIndex = letterJumpIndex(selectorIndex, false);
     requestUpdate();
   });
 }
@@ -417,4 +418,8 @@ size_t FileBrowserActivity::findEntry(const std::string& name) const {
   for (size_t i = 0; i < files.size(); i++)
     if (files[i] == name) return i;
   return 0;
+}
+
+size_t FileBrowserActivity::letterJumpIndex(size_t from, bool forward) const {
+  return LetterJump::jump(files, from, forward);
 }
