@@ -58,6 +58,9 @@ class CrossPointSettings {
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
   enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
+  // Scope of the status-bar page counter: the current chapter's real pages, or an estimated
+  // position within the whole book (extrapolated; see BookPages.h).
+  enum PAGE_COUNT_SCOPE { PAGE_COUNT_CHAPTER = 0, PAGE_COUNT_BOOK = 1, PAGE_COUNT_SCOPE_COUNT };
   enum XTC_STATUS_BAR_MODE {
     XTC_STATUS_BAR_HIDE = 0,
     XTC_STATUS_BAR_BOTTOM = 1,
@@ -170,6 +173,8 @@ class CrossPointSettings {
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
   uint8_t statusBarChapterPageCount = 1;
+  // Whether the page counter shows chapter pages (default) or an estimated whole-book position.
+  uint8_t statusBarPageCountScope = PAGE_COUNT_CHAPTER;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;

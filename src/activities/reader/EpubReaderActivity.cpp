@@ -17,6 +17,7 @@
 #include <iterator>
 #include <limits>
 
+#include "BookPages.h"
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -1124,7 +1125,23 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub->getTitle();
   }
 
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset);
+  // Whole-book page counter: substitute the chapter numbers with an estimated position in the
+  // whole book, extrapolated from this chapter's laid-out pages and its share of the book's bytes.
+  // Falls back to chapter pages whenever no sane estimate exists (tiny spans, zero pages).
+  int displayPage = currentPage;
+  int displayPageCount = static_cast<int>(pageCount);
+  if (SETTINGS.statusBarPageCountScope == CrossPointSettings::PAGE_COUNT_BOOK) {
+    const float chapterSpan =
+        epub->calculateProgress(currentSpineIndex, 1.0f) - epub->calculateProgress(currentSpineIndex, 0.0f);
+    const int bookPageCount = BookPages::estimateBookPageCount(static_cast<int>(pageCount), chapterSpan);
+    const int bookPage = BookPages::estimateBookPage(bookProgress, bookPageCount);
+    if (bookPageCount > 0 && bookPage > 0) {
+      displayPage = bookPage;
+      displayPageCount = bookPageCount;
+    }
+  }
+
+  GUI.drawStatusBar(renderer, bookProgress, displayPage, displayPageCount, title, 0, textYOffset);
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

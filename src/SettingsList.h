@@ -222,6 +222,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
         SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
                             "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Enum(StrId::STR_PAGE_COUNT_SCOPE, &CrossPointSettings::statusBarPageCountScope,
+                          {StrId::STR_CHAPTER, StrId::STR_BOOK}, "statusBarPageCountScope",
+                          StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &CrossPointSettings::statusBarBookProgressPercentage,
                             "statusBarBookProgressPercentage", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Enum(StrId::STR_PROGRESS_BAR, &CrossPointSettings::statusBarProgressBar,
