@@ -44,13 +44,17 @@ class EpubReaderActivity final : public Activity {
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
+  // Jump-back stack: positions saved before footnote, chapter, percent, and bookmark jumps.
+  // Short-press BACK unwinds it (newest first) before falling through to "go home". When full,
+  // the oldest entry is evicted so recent jumps always remain returnable.
   struct SavedPosition {
     int spineIndex;
     int pageNumber;
   };
-  static constexpr int MAX_FOOTNOTE_DEPTH = 3;
-  SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
-  int footnoteDepth = 0;
+  static constexpr int MAX_JUMP_DEPTH = 6;
+  SavedPosition savedPositions[MAX_JUMP_DEPTH] = {};
+  int jumpDepth = 0;
+  void pushCurrentPosition();
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);

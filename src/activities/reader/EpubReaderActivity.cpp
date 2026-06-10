@@ -304,7 +304,7 @@ void EpubReaderActivity::loop() {
   // Short press BACK goes directly to home (or restores position if viewing footnote)
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    if (footnoteDepth > 0) {
+    if (jumpDepth > 0) {
       restoreSavedPosition();
       return;
     }
@@ -318,7 +318,7 @@ void EpubReaderActivity::loop() {
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
       mappedInput.wasReleased(MappedInputManager::Button::Power) &&
       !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (footnoteDepth > 0) {
+    if (jumpDepth > 0) {
       restoreSavedPosition();
     } else {
       if (currentPageFootnotes.size() == 1) {
@@ -460,6 +460,9 @@ void EpubReaderActivity::jumpToPercent(int percent) {
     pendingSpineProgress = 1.0f;
   }
 
+  // Save the position we're jumping away from so short-press BACK can return to it.
+  pushCurrentPosition();
+
   // Reset state so render() reloads and repositions on the target spine.
   {
     RenderLock lock(*this);
@@ -475,6 +478,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     if (!result.isCancelled) {
       const auto& sync = std::get<ProgressChangeResult>(result.data);
       if (currentSpineIndex != sync.spineIndex || (section && section->currentPage != sync.page)) {
+        pushCurrentPosition();
         RenderLock lock(*this);
         currentSpineIndex = sync.spineIndex;
         nextPageNumber = sync.page;
@@ -492,6 +496,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           [this](const ActivityResult& result) {
             if (!result.isCancelled) {
               const auto& chapterResult = std::get<ChapterResult>(result.data);
+              // Save the position we're jumping away from (skip no-op selections of the same spot).
+              if (chapterResult.spineIndex != currentSpineIndex || !chapterResult.anchor.empty()) {
+                pushCurrentPosition();
+              }
               RenderLock lock(*this);
 
               currentSpineIndex = chapterResult.spineIndex;
@@ -1130,11 +1138,9 @@ void EpubReaderActivity::renderStatusBar() const {
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
   if (!epub) return;
 
-  // Push current position onto saved stack
-  if (savePosition && section && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
-    savedPositions[footnoteDepth] = {currentSpineIndex, section->currentPage};
-    footnoteDepth++;
-    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, section->currentPage);
+  // Push current position onto the jump-back stack
+  if (savePosition) {
+    pushCurrentPosition();
   }
 
   // Extract fragment anchor (e.g. "#note1" or "chapter2.xhtml#note1")
@@ -1156,7 +1162,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 
   if (targetSpineIndex < 0) {
     LOG_DBG("ERS", "Could not resolve href: %s", hrefStr.c_str());
-    if (savePosition && footnoteDepth > 0) footnoteDepth--;  // undo push
+    if (savePosition && jumpDepth > 0) jumpDepth--;  // undo push
     return;
   }
 
@@ -1171,11 +1177,23 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   LOG_DBG("ERS", "Navigated to spine %d for href: %s", targetSpineIndex, hrefStr.c_str());
 }
 
+void EpubReaderActivity::pushCurrentPosition() {
+  if (!section) return;
+  if (jumpDepth >= MAX_JUMP_DEPTH) {
+    // Evict the oldest saved position so recent jumps always remain returnable.
+    for (int i = 1; i < MAX_JUMP_DEPTH; i++) savedPositions[i - 1] = savedPositions[i];
+    jumpDepth = MAX_JUMP_DEPTH - 1;
+  }
+  savedPositions[jumpDepth] = {currentSpineIndex, section->currentPage};
+  jumpDepth++;
+  LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", jumpDepth, currentSpineIndex, section->currentPage);
+}
+
 void EpubReaderActivity::restoreSavedPosition() {
-  if (footnoteDepth <= 0) return;
-  footnoteDepth--;
-  const auto& pos = savedPositions[footnoteDepth];
-  LOG_DBG("ERS", "Restoring position [%d]: spine %d, page %d", footnoteDepth, pos.spineIndex, pos.pageNumber);
+  if (jumpDepth <= 0) return;
+  jumpDepth--;
+  const auto& pos = savedPositions[jumpDepth];
+  LOG_DBG("ERS", "Restoring position [%d]: spine %d, page %d", jumpDepth, pos.spineIndex, pos.pageNumber);
 
   {
     RenderLock lock(*this);
