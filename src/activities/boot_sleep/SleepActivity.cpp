@@ -450,6 +450,9 @@ void SleepActivity::drawSleepInfoPane() const {
   if (infoTitle.empty()) {
     return;
   }
+  // Draw in the user's reading orientation: wallpaper art is authored for how the device is
+  // physically held, which is what the reader orientation setting captures. Restored below.
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
@@ -526,6 +529,7 @@ void SleepActivity::drawSleepInfoPane() const {
     renderer.drawText(bodyFont, padX, y, session.c_str());
     renderer.drawText(bodyFont, screenW - padX - lifeW, y, lifetime.c_str());
   }
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 }
 
 namespace {
@@ -539,6 +543,7 @@ void drawCenteredText(GfxRenderer& renderer, const int fontId, const int y, cons
 
 void SleepActivity::renderFrontispieceSleepScreen() const {
   loadSleepInfoIfEnabled(/*force=*/true);
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   renderer.clearScreen();
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
@@ -600,11 +605,13 @@ void SleepActivity::renderFrontispieceSleepScreen() const {
   }
   drawCenteredText(renderer, UI_10_FONT_ID, screenH - 70, "CrossPoint", EpdFontFamily::BOLD);
 
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   renderer.displayBuffer();
 }
 
 void SleepActivity::renderDashboardSleepScreen() const {
   loadSleepInfoIfEnabled(/*force=*/true);
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   renderer.clearScreen();
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
@@ -660,5 +667,6 @@ void SleepActivity::renderDashboardSleepScreen() const {
   }
   drawCenteredText(renderer, UI_10_FONT_ID, screenH - 70, "CrossPoint", EpdFontFamily::BOLD);
 
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   renderer.displayBuffer();
 }
