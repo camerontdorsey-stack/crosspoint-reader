@@ -12,8 +12,10 @@
 #include <cstring>
 #include <vector>
 
+#include "BigDigits.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "ReadingStats.h"
 #include "activities/reader/ReaderUtils.h"
 #include "activities/reader/ReadingEstimate.h"
 #include "components/UITheme.h"
@@ -45,6 +47,10 @@ void SleepActivity::onEnter() {
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       return renderBlankSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::FRONTISPIECE):
+      return renderFrontispieceSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::DASHBOARD):
+      return renderDashboardSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
       return renderCustomSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
@@ -343,10 +349,21 @@ void SleepActivity::renderBlankSleepScreen() const {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
-void SleepActivity::loadSleepInfoIfEnabled() const {
+void SleepActivity::loadSleepInfoIfEnabled(const bool force) const {
   infoTitle.clear();
   infoAuthor.clear();
-  if (SETTINGS.sleepInfoPane == CrossPointSettings::SLEEP_INFO_PANE_OFF || APP_STATE.openEpubPath.empty()) {
+
+  // Reading stats are independent of the open book; the typographic sleep modes show them even
+  // with no book in flight.
+  ReadingStats::Stats stats;
+  if (ReadingStats::load(stats)) {
+    infoSessionMin = static_cast<long>(stats.sessionMs / 60000UL);
+    infoLifetimeMin = static_cast<long>(stats.lifetimeMs / 60000ULL);
+    infoSessionPages = stats.sessionPages;
+    infoLifetimePages = stats.lifetimePages;
+  }
+
+  if ((!force && SETTINGS.sleepInfoPane == CrossPointSettings::SLEEP_INFO_PANE_OFF) || APP_STATE.openEpubPath.empty()) {
     return;
   }
   // v1 reads metadata from EPUBs only; TXT/XTC simply show no pane.
@@ -395,6 +412,13 @@ void SleepActivity::loadSleepInfoIfEnabled() const {
     return;  // no usable page metrics; pane still shows title + second line
   }
 
+  if (haveProgress && chapterTotal > 0) {
+    const float chapFrac = static_cast<float>(curPage + 1) / static_cast<float>(chapterTotal);
+    infoProgressPct = static_cast<int>(epub.calculateProgress(spineIndex, chapFrac) * 100.0f + 0.5f);
+    if (infoProgressPct < 0) infoProgressPct = 0;
+    if (infoProgressPct > 100) infoProgressPct = 100;
+  }
+
   const int curPage1 = static_cast<int>(curPage) + 1;
   const float chapterLeft = ReadingEstimate::chapterPagesLeft(curPage1, chapterTotal);
   float pagesLeft = chapterLeft;
@@ -429,37 +453,43 @@ void SleepActivity::drawSleepInfoPane() const {
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
+  // "Ticket stub": a full-width opaque band, separated from the wallpaper by a 2px rule.
+  // Position (top/bottom) follows the existing pane-position setting.
   constexpr int titleFont = UI_10_FONT_ID;
   constexpr int bodyFont = SMALL_FONT_ID;
-  constexpr int padX = 16;        // horizontal text padding inside the pane
-  constexpr int padY = 10;        // vertical text padding inside the pane
-  constexpr int edgeMargin = 24;  // gap from the screen edges
-  constexpr int lineGap = 4;      // gap between stacked lines
-  constexpr int radius = 10;      // rounded "glass" corner radius
+  constexpr int padX = 20;
+  constexpr int padY = 12;
+  constexpr int lineGap = 6;
+  constexpr int ruleH = 2;
 
-  const int maxPaneW = screenW - 2 * edgeMargin;
-  const int maxTextW = maxPaneW - 2 * padX;
+  const int titleH = renderer.getLineHeight(titleFont);
+  const int bodyH = renderer.getLineHeight(bodyFont);
+  const bool haveStats = infoLifetimePages > 0;
+  const int rows = haveStats ? 3 : 2;
+  const int bandH = 2 * padY + titleH + bodyH + (haveStats ? bodyH : 0) + (rows - 1) * lineGap + ruleH;
+  const bool top = SETTINGS.sleepInfoPanePosition == CrossPointSettings::SLEEP_INFO_PANE_TOP;
+  const int bandY = top ? 0 : screenH - bandH;
 
-  // Build the up-to-three lines: title (bold), author, "<n> pages left in chapter".
-  struct Line {
-    std::string text;
-    int fontId;
-    EpdFontFamily::Style style;
-    int width;
-    int height;
-  };
-  std::vector<Line> lines;
-  lines.reserve(4);
-  auto addLine = [&](const std::string& raw, int fontId, EpdFontFamily::Style style) {
-    if (raw.empty()) return;
-    std::string t = renderer.truncatedText(fontId, raw.c_str(), maxTextW, style);
-    lines.push_back(
-        {t, fontId, style, renderer.getTextWidth(fontId, t.c_str(), style), renderer.getLineHeight(fontId)});
-  };
-  addLine(infoTitle, titleFont, EpdFontFamily::BOLD);
-  addLine(infoAuthor, bodyFont, EpdFontFamily::REGULAR);
+  renderer.fillRect(0, bandY, screenW, bandH, false);  // white band
+  // Rule on the inner edge (between band and wallpaper).
+  renderer.fillRect(0, top ? bandY + bandH - ruleH : bandY, screenW, ruleH, true);
 
-  // Metric line(s) per the Content setting, worded for the chosen chapter/book reference.
+  int y = bandY + padY + (top ? 0 : ruleH);
+  const int maxW = screenW - 2 * padX;
+
+  // Row 1: title left (bold), book percent right.
+  std::string pctStr = (infoProgressPct >= 0) ? std::to_string(infoProgressPct) + "%" : "";
+  const int pctW = pctStr.empty() ? 0 : renderer.getTextWidth(titleFont, pctStr.c_str(), EpdFontFamily::BOLD);
+  const std::string title =
+      renderer.truncatedText(titleFont, infoTitle.c_str(), maxW - pctW - (pctW ? padX : 0), EpdFontFamily::BOLD);
+  renderer.drawText(titleFont, padX, y, title.c_str(), true, EpdFontFamily::BOLD);
+  if (!pctStr.empty()) {
+    renderer.drawText(titleFont, screenW - padX - pctW, y, pctStr.c_str(), true, EpdFontFamily::BOLD);
+  }
+  y += titleH + lineGap;
+
+  // Row 2: author/chapter left, pages/time-left right (per the existing content settings).
+  std::string metric;
   const bool refBook = SETTINGS.sleepInfoReference == CrossPointSettings::SLEEP_INFO_REF_BOOK;
   const uint8_t content = SETTINGS.sleepInfoContent;
   const bool wantPages =
@@ -470,36 +500,165 @@ void SleepActivity::drawSleepInfoPane() const {
     const StrId suffix = (infoPagesLeft == 1)
                              ? (refBook ? StrId::STR_PAGE_LEFT_IN_BOOK : StrId::STR_PAGE_LEFT_IN_CHAPTER)
                              : (refBook ? StrId::STR_PAGES_LEFT_IN_BOOK : StrId::STR_PAGES_LEFT_IN_CHAPTER);
-    addLine(std::to_string(infoPagesLeft) + " " + I18N.get(suffix), bodyFont, EpdFontFamily::REGULAR);
+    metric = std::to_string(infoPagesLeft) + " " + I18N.get(suffix);
   }
   if (wantTime && infoMinutesLeft >= 0) {
     const StrId suffix = refBook ? StrId::STR_MIN_LEFT_IN_BOOK : StrId::STR_MIN_LEFT_IN_CHAPTER;
-    addLine("~" + std::to_string(infoMinutesLeft) + " " + I18N.get(suffix), bodyFont, EpdFontFamily::REGULAR);
+    if (!metric.empty()) metric += "  ";
+    metric += "~" + std::to_string(infoMinutesLeft) + " " + I18N.get(suffix);
+  }
+  const int metricW = metric.empty() ? 0 : renderer.getTextWidth(bodyFont, metric.c_str());
+  const std::string author =
+      renderer.truncatedText(bodyFont, infoAuthor.c_str(), maxW - metricW - (metricW ? padX : 0));
+  renderer.drawText(bodyFont, padX, y, author.c_str());
+  if (!metric.empty()) {
+    renderer.drawText(bodyFont, screenW - padX - metricW, y, metric.c_str());
+  }
+  y += bodyH + lineGap;
+
+  // Row 3: reading stats (session left, all-time right). Omitted until any stats exist.
+  if (haveStats) {
+    std::string session = ReadingStats::formatDuration(infoSessionMin < 0 ? 0 : infoSessionMin) + " · " +
+                          std::to_string(infoSessionPages) + " pages today";
+    std::string lifetime = ReadingStats::formatDuration(infoLifetimeMin) + " all time";
+    const int lifeW = renderer.getTextWidth(bodyFont, lifetime.c_str());
+    session = renderer.truncatedText(bodyFont, session.c_str(), maxW - lifeW - padX);
+    renderer.drawText(bodyFont, padX, y, session.c_str());
+    renderer.drawText(bodyFont, screenW - padX - lifeW, y, lifetime.c_str());
+  }
+}
+
+namespace {
+// Shared helpers for the typographic sleep modes.
+void drawCenteredText(GfxRenderer& renderer, const int fontId, const int y, const std::string& text,
+                      const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const int w = renderer.getTextWidth(fontId, text.c_str(), style);
+  renderer.drawText(fontId, (renderer.getScreenWidth() - w) / 2, y, text.c_str(), true, style);
+}
+}  // namespace
+
+void SleepActivity::renderFrontispieceSleepScreen() const {
+  loadSleepInfoIfEnabled(/*force=*/true);
+  renderer.clearScreen();
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+
+  // Double-rule frame, fine-press style.
+  renderer.drawRect(16, 16, screenW - 32, screenH - 32, 2, true);
+  renderer.drawRect(24, 24, screenW - 48, screenH - 48, 1, true);
+
+  const int contentW = screenW - 120;
+  int y = screenH / 5;
+
+  if (!infoTitle.empty()) {
+    const std::string title =
+        renderer.truncatedText(NOTOSERIF_18_FONT_ID, infoTitle.c_str(), contentW, EpdFontFamily::BOLD);
+    drawCenteredText(renderer, NOTOSERIF_18_FONT_ID, y, title, EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(NOTOSERIF_18_FONT_ID) + 16;
+    if (!infoAuthor.empty()) {
+      const std::string author = renderer.truncatedText(NOTOSERIF_14_FONT_ID, infoAuthor.c_str(), contentW);
+      drawCenteredText(renderer, NOTOSERIF_14_FONT_ID, y, author);
+      y += renderer.getLineHeight(NOTOSERIF_14_FONT_ID) + 28;
+    }
+  } else {
+    drawCenteredText(renderer, NOTOSERIF_18_FONT_ID, y, "CrossPoint", EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(NOTOSERIF_18_FONT_ID) + 28;
   }
 
-  int textW = 0;
-  int textH = 0;
-  for (size_t i = 0; i < lines.size(); i++) {
-    textW = std::max(textW, lines[i].width);
-    textH += lines[i].height + (i > 0 ? lineGap : 0);
+  // Ornament.
+  renderer.fillRect(screenW / 2 - 5, y + 5, 10, 10, true);
+  y += 40;
+
+  if (infoProgressPct >= 0) {
+    drawCenteredText(renderer, SMALL_FONT_ID, y, std::to_string(infoProgressPct) + "% COMPLETE");
+    y += renderer.getLineHeight(SMALL_FONT_ID) + 14;
+    // Thin framed progress bar.
+    const int barW = contentW;
+    const int barX = (screenW - barW) / 2;
+    renderer.drawRect(barX, y, barW, 10, 1, true);
+    renderer.fillRect(barX, y, barW * infoProgressPct / 100, 10, true);
+    y += 28;
+  }
+  if (infoMinutesLeft >= 0) {
+    drawCenteredText(renderer, SMALL_FONT_ID, y, "~" + ReadingStats::formatDuration(infoMinutesLeft) + " left");
+    y += renderer.getLineHeight(SMALL_FONT_ID) + 16;
   }
 
-  const int paneW = std::min(maxPaneW, textW + 2 * padX);
-  const int paneH = 2 * padY + textH;
-  const int paneX = (screenW - paneW) / 2;
-  const int paneY = (SETTINGS.sleepInfoPanePosition == CrossPointSettings::SLEEP_INFO_PANE_TOP)
-                        ? edgeMargin
-                        : screenH - edgeMargin - paneH;
-
-  // Opaque white card with a thin rounded border — clean and legible over any photo.
-  renderer.fillRoundedRect(paneX, paneY, paneW, paneH, radius, Color::White);
-  renderer.drawRoundedRect(paneX, paneY, paneW, paneH, 1, radius, true);
-
-  // Stack the lines, each centered within the pane.
-  int lineTop = paneY + padY;
-  for (size_t i = 0; i < lines.size(); i++) {
-    if (i > 0) lineTop += lines[i - 1].height + lineGap;
-    renderer.drawText(lines[i].fontId, paneX + (paneW - lines[i].width) / 2, lineTop, lines[i].text.c_str(), true,
-                      lines[i].style);
+  // Stats block anchored above the footer.
+  int statsY = screenH - 150;
+  renderer.fillRect(60, statsY, screenW - 120, 1, true);
+  statsY += 16;
+  if (infoLifetimePages > 0) {
+    drawCenteredText(renderer, SMALL_FONT_ID, statsY,
+                     "Today " + ReadingStats::formatDuration(infoSessionMin < 0 ? 0 : infoSessionMin) + " · " +
+                         std::to_string(infoSessionPages) + " pages");
+    statsY += renderer.getLineHeight(SMALL_FONT_ID) + 8;
+    drawCenteredText(renderer, SMALL_FONT_ID, statsY,
+                     "All time " + ReadingStats::formatDuration(infoLifetimeMin) + " · " +
+                         std::to_string(infoLifetimePages) + " pages");
+    statsY += renderer.getLineHeight(SMALL_FONT_ID) + 8;
   }
+  drawCenteredText(renderer, UI_10_FONT_ID, screenH - 70, "CrossPoint", EpdFontFamily::BOLD);
+
+  renderer.displayBuffer();
+}
+
+void SleepActivity::renderDashboardSleepScreen() const {
+  loadSleepInfoIfEnabled(/*force=*/true);
+  renderer.clearScreen();
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+
+  renderer.drawRect(16, 16, screenW - 32, screenH - 32, 2, true);
+
+  const int contentW = screenW - 120;
+  int y = 70;
+
+  if (!infoTitle.empty()) {
+    const std::string title = renderer.truncatedText(UI_10_FONT_ID, infoTitle.c_str(), contentW, EpdFontFamily::BOLD);
+    drawCenteredText(renderer, UI_10_FONT_ID, y, title, EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(UI_10_FONT_ID) + 6;
+    if (!infoAuthor.empty()) {
+      drawCenteredText(renderer, SMALL_FONT_ID, y, renderer.truncatedText(SMALL_FONT_ID, infoAuthor.c_str(), contentW));
+    }
+  } else {
+    drawCenteredText(renderer, UI_10_FONT_ID, y, "CrossPoint", EpdFontFamily::BOLD);
+  }
+
+  // Centerpiece: oversized percent in block numerals.
+  const int pct = infoProgressPct >= 0 ? infoProgressPct : 0;
+  const std::string pctText = std::to_string(pct) + "%";
+  constexpr int digitH = 160;
+  constexpr int digitGap = 18;
+  const int bigW = BigDigits::textWidth(pctText, digitH, digitGap);
+  const int bigX = (screenW - bigW) / 2;
+  const int bigY = screenH / 2 - digitH / 2 - 40;
+  BigDigits::drawText(
+      pctText, bigX, bigY, digitH, digitGap,
+      [this](const int x, const int yy, const int w, const int h) { renderer.fillRect(x, yy, w, h, true); });
+  drawCenteredText(renderer, SMALL_FONT_ID, bigY + digitH + 18, "COMPLETE");
+
+  int rowY = bigY + digitH + 60;
+  // Framed progress bar.
+  const int barW = contentW;
+  const int barX = (screenW - barW) / 2;
+  renderer.drawRect(barX, rowY, barW, 12, 1, true);
+  renderer.fillRect(barX, rowY, barW * pct / 100, 12, true);
+  rowY += 34;
+  if (infoMinutesLeft >= 0) {
+    drawCenteredText(renderer, SMALL_FONT_ID, rowY, "~" + ReadingStats::formatDuration(infoMinutesLeft) + " left");
+    rowY += renderer.getLineHeight(SMALL_FONT_ID) + 10;
+  }
+
+  if (infoLifetimePages > 0) {
+    const int statsY = screenH - 130;
+    renderer.fillRect(60, statsY, screenW - 120, 1, true);
+    drawCenteredText(renderer, SMALL_FONT_ID, statsY + 14,
+                     "Today " + ReadingStats::formatDuration(infoSessionMin < 0 ? 0 : infoSessionMin) + " · " +
+                         std::to_string(infoSessionPages) + " pages   |   All time " +
+                         ReadingStats::formatDuration(infoLifetimeMin));
+  }
+  drawCenteredText(renderer, UI_10_FONT_ID, screenH - 70, "CrossPoint", EpdFontFamily::BOLD);
+
+  renderer.displayBuffer();
 }

@@ -32,6 +32,7 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "ReadingEstimate.h"
+#include "ReadingStats.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -727,6 +728,12 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     if (lastForwardTurnTime != 0UL) {
       const unsigned long delta = now - lastForwardTurnTime;
       if (ReadingEstimate::isValidSample(delta)) {
+        // Reading stats: a valid page-turn interval is also a clean "time spent reading" sample.
+        auto& stats = ReadingStats::current();
+        stats.sessionMs += static_cast<uint32_t>(delta);
+        stats.lifetimeMs += delta;
+        stats.sessionPages++;
+        stats.lifetimePages++;
         if (!speedWarmedUp) {
           // Buffer the warm-up window, then seed the average from its median (robust to an odd first page).
           if (warmupCount < ReadingEstimate::WARMUP_SAMPLES) {
@@ -975,6 +982,8 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   const bool ok = EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
+  // Persist reading stats for the sleep screens (same throttled cadence as progress saves).
+  ReadingStats::save(ReadingStats::current());
   // Persist the running reading speed (global) so the sleep screen can show a time-left estimate.
   // Piggybacks on progress saves, which are already throttled, so it adds no extra SD churn.
   if (readingSpeedSamples > 0) {
