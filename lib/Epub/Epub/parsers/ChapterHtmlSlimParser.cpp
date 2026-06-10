@@ -12,6 +12,7 @@
 #include <iterator>
 #include <new>
 
+#include "../Typography.h"
 #include "Epub.h"
 #include "Epub/Page.h"
 #include "Epub/converters/ImageDecoderFactory.h"
@@ -1350,9 +1351,38 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
+  if (!orphanControl) {
+    placeLineOnPage(std::move(line), false);
+    return;
+  }
+  // Hold each line back until its successor arrives, so placement knows whether the paragraph
+  // continues. makePages() flushes the held last line at the end of every paragraph.
+  if (deferredLine) {
+    placeLineOnPage(std::move(deferredLine), true);
+  }
+  deferredLine = std::move(line);
+}
+
+void ChapterHtmlSlimParser::flushDeferredLine() {
+  if (deferredLine) {
+    placeLineOnPage(std::move(deferredLine), false);
+  }
+  lineIndexInParagraph = 0;
+}
+
+void ChapterHtmlSlimParser::placeLineOnPage(std::shared_ptr<TextBlock> line, const bool paragraphHasMoreLines) {
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
   if (!currentPage) {
+    currentPage.reset(new Page());
+    currentPageNextY = 0;
+  }
+
+  // Orphan control: break early rather than strand the paragraph's first line at the bottom.
+  if (orphanControl && Typography::shouldBreakForOrphan(lineIndexInParagraph, paragraphHasMoreLines, currentPageNextY,
+                                                        lineHeight, viewportHeight)) {
+    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex);
+    completedPageCount++;
     currentPage.reset(new Page());
     currentPageNextY = 0;
   }
@@ -1377,6 +1407,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   const int16_t xOffset = line->getBlockStyle().leftInset();
   currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
   currentPageNextY += lineHeight;
+  lineIndexInParagraph++;
 }
 
 void ChapterHtmlSlimParser::makePages() {
@@ -1409,6 +1440,9 @@ void ChapterHtmlSlimParser::makePages() {
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,
       [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); });
+
+  // Paragraph complete: release the held last line and reset the per-paragraph line index.
+  flushDeferredLine();
 
   // Fallback: transfer any remaining pending footnotes to current page.
   // Normally addLineToPage handles this via word-index tracking, but this catches

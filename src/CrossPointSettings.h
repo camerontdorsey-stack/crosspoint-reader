@@ -215,6 +215,9 @@ class CrossPointSettings {
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
   uint8_t hyphenationEnabled = 0;
+  // Typography: avoid orphan lines (a paragraph's first line stranded at the bottom of a page).
+  // Off by default; flipping it re-renders section caches (part of the section file header).
+  uint8_t orphanControl = 0;
 
   // Reader screen margin settings
   uint8_t screenMargin = 5;

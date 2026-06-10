@@ -47,6 +47,10 @@ class ChapterHtmlSlimParser {
   uint16_t viewportWidth;
   uint16_t viewportHeight;
   bool hyphenationEnabled;
+  // Orphan control (Typography.h): defer a paragraph's first line when it would land in the
+  // page's last slot. Implemented with a one-line buffer so each line knows whether a sibling
+  // follows it within the same paragraph.
+  bool orphanControl;
   bool focusReadingEnabled;
   const CssParser* cssParser;
   bool embeddedStyle;
@@ -113,7 +117,7 @@ class ChapterHtmlSlimParser {
   explicit ChapterHtmlSlimParser(std::shared_ptr<Epub> epub, const std::string& filepath, GfxRenderer& renderer,
                                  const int fontId, const float lineCompression, const bool extraParagraphSpacing,
                                  const uint8_t paragraphAlignment, const uint16_t viewportWidth,
-                                 const uint16_t viewportHeight, const bool hyphenationEnabled,
+                                 const uint16_t viewportHeight, const bool hyphenationEnabled, const bool orphanControl,
                                  const bool focusReadingEnabled,
                                  const std::function<void(std::unique_ptr<Page>, uint16_t, uint16_t)>& completePageFn,
                                  const bool embeddedStyle, const std::string& contentBase,
@@ -131,6 +135,7 @@ class ChapterHtmlSlimParser {
         viewportWidth(viewportWidth),
         viewportHeight(viewportHeight),
         hyphenationEnabled(hyphenationEnabled),
+        orphanControl(orphanControl),
         focusReadingEnabled(focusReadingEnabled),
         completePageFn(completePageFn),
         popupFn(popupFn),
@@ -144,5 +149,11 @@ class ChapterHtmlSlimParser {
   ~ChapterHtmlSlimParser() = default;
   bool parseAndBuildPages();
   void addLineToPage(std::shared_ptr<TextBlock> line);
+  // Orphan-control plumbing: addLineToPage buffers one line; placeLineOnPage does the actual
+  // page-break + placement; flushDeferredLine releases the buffered last line of a paragraph.
+  void placeLineOnPage(std::shared_ptr<TextBlock> line, bool paragraphHasMoreLines);
+  void flushDeferredLine();
+  std::shared_ptr<TextBlock> deferredLine;
+  uint16_t lineIndexInParagraph = 0;
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
 };
